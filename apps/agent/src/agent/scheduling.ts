@@ -1,4 +1,11 @@
-import { type Automation, type AutomationKind, type ScheduleSpec, computeNextRun, scheduleSpecSchema } from "@talorys/shared";
+import {
+  type Automation,
+  type AutomationKind,
+  type ScheduleSpec,
+  computeNextRun,
+  isValidTimeZone,
+  scheduleSpecSchema,
+} from "@talorys/shared";
 import type { AutomationRepository } from "../db/repositories/automations";
 import type { SettingsService } from "../services/settings";
 import type { ActivityLog } from "../services/usage";
@@ -30,7 +37,8 @@ export class AutomationService {
   ) {}
 
   private tz(): string {
-    return this.settings.get().timezone;
+    const tz = this.settings.get().timezone;
+    return isValidTimeZone(tz) ? tz : "UTC";
   }
 
   list(): Automation[] {
@@ -44,10 +52,10 @@ export class AutomationService {
   async create(input: { name: string; kind: AutomationKind; message: string; schedule: ScheduleSpec; enabled: boolean }): Promise<Automation> {
     const schedule = scheduleSpecSchema.parse(input.schedule);
     if ((input.kind === "reminder" || input.kind === "agent_prompt") && !input.message.trim()) {
-      throw new ValidationError(input.kind === "reminder" ? "A reminder needs a message." : "An AI automation needs a prompt.");
+      throw new ValidationError(input.kind === "reminder" ? "미리 알림에는 메시지가 필요합니다." : "AI 자동화에는 프롬프트가 필요합니다.");
     }
     const first = computeNextRun(schedule, this.tz(), new Date());
-    if (!first) throw new ValidationError("That time is in the past. Choose a future time.");
+    if (!first) throw new ValidationError("과거 시간은 설정할 수 없습니다. 미래 시간을 선택하세요.");
     const automation = this.repo.create({ ...input, schedule });
     this.activity.record("automation.created", `Created automation “${automation.name}”`);
     return automation.enabled ? this.arm(automation) : automation;
@@ -94,7 +102,8 @@ export class AutomationService {
   }
 
   private async arm(automation: Automation, after = new Date()): Promise<Automation> {
-    const next = computeNextRun(automation.schedule, this.tz(), after);
+    const safeAfter = Number.isNaN(after.getTime()) ? new Date() : after;
+    const next = computeNextRun(automation.schedule, this.tz(), safeAfter);
     if (!next) {
       return this.repo.update(automation.id, { status: "completed", enabled: false, next_run: null, schedule_id: null });
     }
@@ -146,7 +155,8 @@ export class AutomationService {
     if (!ownsSchedule) return;
     // Schedule the next occurrence after both "now" and the slot that just fired.
     const slot = automation.next_run ? new Date(automation.next_run) : new Date();
-    const after = new Date(Math.max(Date.now(), slot.getTime()));
+    const slotTime = Number.isNaN(slot.getTime()) ? Date.now() : slot.getTime();
+    const after = new Date(Math.max(Date.now(), slotTime));
     const rearmed = await this.arm(updated, after);
     if (lastError && rearmed.enabled) this.repo.update(automation.id, { status: "failed" });
   }
