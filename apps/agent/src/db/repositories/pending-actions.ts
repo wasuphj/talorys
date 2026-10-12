@@ -82,6 +82,10 @@ export class PendingActionRepository {
   }
 
   markFailed(id: string, error: string): void {
-    this.db.run(`UPDATE tal_pending_actions SET status = 'failed', error = ? WHERE id = ?`, error.slice(0, 300), id);
+    const at = now();
+    this.db.run(
+      `UPDATE tal_pending_actions SET status = 'failed', error = ?, resolved_at = ? WHERE id = ?`,
+      error.slice(0, 300), at, id,
+    );
   }
 }

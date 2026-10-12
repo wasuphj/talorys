@@ -358,8 +358,8 @@ export class ComputerStateManager {
     const entry: ActionLogEntry = {
       timestamp: new Date().toISOString(),
       action,
-      input,
-      result,
+      input: sanitizeForLog(input),
+      result: typeof result === "string" ? (sanitizeForLog(result) as string) : result,
       screenshot,
     };
     this.history.push(entry);
@@ -395,3 +395,43 @@ export class ComputerStateManager {
 }
 
 export const computerState = new ComputerStateManager();
+
+export function sanitizeForLog(data: unknown): unknown {
+  if (!data) return data;
+  if (typeof data === "string") {
+    return data
+      .replace(/(bearer\s+)[A-Za-z0-9_\-.]+/gi, "$1[REDACTED]")
+      .replace(/(password['":\s=]+)[^\s&,;}"']+/gi, "$1[REDACTED]")
+      .replace(/(token['":\s=]+)[^\s&,;}"']+/gi, "$1[REDACTED]")
+      .replace(/(secret['":\s=]+)[^\s&,;}"']+/gi, "$1[REDACTED]");
+  }
+  if (typeof data === "object") {
+    if (Array.isArray(data)) return data.map(sanitizeForLog);
+    const sanitized: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(data as Record<string, unknown>)) {
+      const lowerKey = k.toLowerCase();
+      if (
+        lowerKey.includes("password") ||
+        lowerKey.includes("secret") ||
+        lowerKey.includes("token") ||
+        lowerKey.includes("apikey") ||
+        lowerKey.includes("auth")
+      ) {
+        sanitized[k] = "[REDACTED]";
+      } else if (lowerKey === "text" && typeof v === "string") {
+        const obj = data as Record<string, unknown>;
+        const isSecret = Boolean(obj.isSecret);
+        const sel = String(obj.selector || obj.ref || "").toLowerCase();
+        if (isSecret || sel.includes("pass") || sel.includes("secret") || sel.includes("token") || sel.includes("key")) {
+          sanitized[k] = "[REDACTED]";
+        } else {
+          sanitized[k] = sanitizeForLog(v);
+        }
+      } else {
+        sanitized[k] = sanitizeForLog(v);
+      }
+    }
+    return sanitized;
+  }
+  return data;
+}

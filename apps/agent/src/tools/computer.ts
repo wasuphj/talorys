@@ -2,7 +2,13 @@ import { z } from "zod";
 import { defineTool, ToolError } from "./registry";
 
 const getComputerApiUrl = () => process.env.COMPUTER_MANAGER_URL || "http://127.0.0.1:28789";
-const getComputerSecret = () => process.env.COMPUTER_MANAGER_SECRET || "talorys-computer-internal-secret";
+const getComputerSecret = () => {
+  const secret = process.env.COMPUTER_MANAGER_SECRET;
+  if (!secret?.trim()) {
+    throw new ToolError("COMPUTER_MANAGER_SECRET가 설정되지 않아 컴퓨터 제어 서비스를 호출할 수 없습니다 (Fail-Closed).");
+  }
+  return secret.trim();
+};
 
 async function callComputerApi(endpoint: string, body?: unknown) {
   try {
@@ -90,15 +96,19 @@ export const computerTools = [
 
   defineTool({
     name: "computer_type",
-    description: "Type text into an input element (by ref or selector) or active focus area.",
+    description: "Type text into an input element (by ref or selector) or active focus area. Set isSecret to true for passwords or sensitive tokens.",
     permission: "write",
     maxCallsPerTurn: 5,
     input: z.object({
       text: z.string().describe("Text to type"),
       ref: z.string().optional().describe("Element reference id (e.g. '@e2')"),
       selector: z.string().optional().describe("Target input element selector"),
+      isSecret: z.boolean().optional().describe("Set to true for passwords, tokens, or credentials"),
     }),
-    label: (i) => `텍스트 “${i.text.slice(0, 30)}” 입력 중`,
+    label: (i) => {
+      const isSensitive = i.isSecret || i.selector?.toLowerCase().includes("password") || i.ref?.toLowerCase().includes("pass");
+      return isSensitive ? "보안 텍스트 입력 중 [REDACTED]" : `텍스트 “${i.text.slice(0, 30)}” 입력 중`;
+    },
     execute: async (i) => {
       const result = await callComputerApi("/action", { action: "type", ...i });
       return {

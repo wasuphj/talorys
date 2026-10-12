@@ -35,6 +35,8 @@ if (existsSync(target) && !force) {
       "TALORYS_DEV_ORIGINS=http://localhost:5173,http://127.0.0.1:5173",
       `OWNER_PASSWORD_HASH=${await hash(password)}`,
       `SESSION_SECRET=${b64url(crypto.getRandomValues(new Uint8Array(32)))}`,
+      `COMPUTER_MANAGER_SECRET=${process.env.COMPUTER_MANAGER_SECRET || b64url(crypto.getRandomValues(new Uint8Array(24)))}`,
+      `COMPUTER_MANAGER_URL=${process.env.COMPUTER_MANAGER_URL || "http://127.0.0.1:38789"}`,
       "",
     ].join("\n"),
   );

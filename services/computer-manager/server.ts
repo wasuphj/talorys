@@ -14,7 +14,7 @@ import {
 } from "./automation";
 import { VNC_PORT } from "./container";
 
-export const COMPUTER_SERVICE_PORT = 28789;
+export const COMPUTER_SERVICE_PORT = Number(process.env.COMPUTER_SERVICE_PORT) || 28789;
 
 function sendJson(res: http.ServerResponse, status: number, data: unknown) {
   res.writeHead(status, {
@@ -45,18 +45,18 @@ async function readBody(req: http.IncomingMessage): Promise<any> {
 /** Proxy HTTP request to KasmVNC */
 function proxyVncHttp(req: http.IncomingMessage, res: http.ServerResponse, vncPath: string) {
   const targetPath = !vncPath || vncPath === "/" ? "/index.html" : vncPath;
-  const authHeader = req.headers.authorization || `Basic ${Buffer.from("computer:vncpass").toString("base64")}`;
+  const vncBasicAuth = `Basic ${Buffer.from("computer:vncpass").toString("base64")}`;
+
+  const headers = { ...req.headers };
+  headers.host = `127.0.0.1:${VNC_PORT}`;
+  headers.authorization = vncBasicAuth;
 
   const options: http.RequestOptions = {
     hostname: "127.0.0.1",
     port: VNC_PORT,
     path: targetPath,
     method: req.method,
-    headers: {
-      ...req.headers,
-      host: `127.0.0.1:${VNC_PORT}`,
-      authorization: authHeader,
-    },
+    headers,
   };
 
   const proxyReq = http.request(options, (proxyRes) => {
@@ -77,17 +77,18 @@ function proxyVncHttp(req: http.IncomingMessage, res: http.ServerResponse, vncPa
 
 const authCache = new Map<string, { ok: boolean; exp: number }>();
 
-const INTERNAL_SECRET = process.env.COMPUTER_MANAGER_SECRET || "talorys-computer-internal-secret";
+const INTERNAL_SECRET = process.env.COMPUTER_MANAGER_SECRET?.trim();
 
 async function isRequestAuthenticated(req: http.IncomingMessage): Promise<boolean> {
   // 1. Check Bearer token or x-computer-secret header for internal/worker calls
+  // Fail-closed if INTERNAL_SECRET is not configured
   const authHeader = req.headers.authorization;
   if (authHeader?.startsWith("Bearer ")) {
     const bearerToken = authHeader.slice(7).trim();
-    if (bearerToken && bearerToken === INTERNAL_SECRET) return true;
+    if (INTERNAL_SECRET && bearerToken === INTERNAL_SECRET) return true;
   }
   const secretHeader = req.headers["x-computer-secret"];
-  if (secretHeader && secretHeader === INTERNAL_SECRET) return true;
+  if (INTERNAL_SECRET && typeof secretHeader === "string" && secretHeader.trim() === INTERNAL_SECRET) return true;
 
   // 2. Check Talorys session cookie
   const cookie = req.headers.cookie;
@@ -102,7 +103,8 @@ async function isRequestAuthenticated(req: http.IncomingMessage): Promise<boolea
   }
 
   try {
-    const res = await fetch("http://127.0.0.1:28788/api/auth/session", {
+    const authHost = process.env.TALORYS_AUTH_URL || "http://127.0.0.1:28788";
+    const res = await fetch(`${authHost}/api/auth/session`, {
       headers: {
         cookie: req.headers.cookie || "",
         host: "talorys.wasuphj.app",
@@ -262,14 +264,22 @@ export function createComputerServer(): http.Server {
               computerState.logAction("click", body, `Clicked ${body.ref || body.selector || `(${body.x}, ${body.y})`}`, result.screenshotBase64);
               computerState.updatePageInfo(result.url, result.title);
               break;
-            case "type":
+            case "type": {
               if (typeof body.text !== "string") {
                 return sendJson(res, 400, { error: "Missing or invalid text for type action" });
               }
               result = await typeText(body.text, body.ref || body.selector, actionSignal);
-              computerState.logAction("type", { text: body.text, target: body.ref || body.selector }, `Typed "${body.text}"`, result.screenshotBase64);
+              const isSecret = Boolean(body.isSecret) || /pass|secret|token|key/i.test(String(body.ref || body.selector || ""));
+              const displayText = isSecret ? "[REDACTED]" : body.text;
+              computerState.logAction(
+                "type",
+                { text: isSecret ? "[REDACTED]" : body.text, target: body.ref || body.selector, isSecret },
+                `Typed "${displayText}"`,
+                result.screenshotBase64
+              );
               computerState.updatePageInfo(result.url, result.title);
               break;
+            }
             case "key":
               if (!body.key || typeof body.key !== "string") {
                 return sendJson(res, 400, { error: "Missing or invalid key for key action" });
@@ -345,12 +355,12 @@ export function createComputerServer(): http.Server {
     const targetSocket = net.connect(VNC_PORT, "127.0.0.1", () => {
       // Forward HTTP upgrade headers to KasmVNC
       const upgradeHeaders = { ...req.headers };
-      if (!upgradeHeaders.authorization) {
-        upgradeHeaders.authorization = `Basic ${Buffer.from("computer:vncpass").toString("base64")}`;
-      }
+      upgradeHeaders.authorization = `Basic ${Buffer.from("computer:vncpass").toString("base64")}`;
       upgradeHeaders.host = `127.0.0.1:${VNC_PORT}`;
 
-      let reqStr = `${req.method} ${req.url} HTTP/${req.httpVersion}\r\n`;
+      // Normalize VNC websocket path to /websockify
+      const targetPath = req.url ? req.url.replace(/^.*\/websockify/, "/websockify") : "/websockify";
+      let reqStr = `${req.method} ${targetPath} HTTP/${req.httpVersion}\r\n`;
       for (const [key, val] of Object.entries(upgradeHeaders)) {
         if (Array.isArray(val)) {
           for (const v of val) reqStr += `${key}: ${v}\r\n`;

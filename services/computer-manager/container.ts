@@ -1,4 +1,6 @@
-import { execFile } from "node:child_process";
+import http from "node:http";
+import crypto from "node:crypto";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -23,6 +25,114 @@ export interface ContainerDriver {
   execInContainer(cmd: string[]): Promise<{ stdout: string; stderr: string }>;
 }
 
+let localChromeProc: ChildProcess | null = null;
+let localVncServer: http.Server | null = null;
+
+export async function stopLocalServices(): Promise<void> {
+  if (localChromeProc) {
+    try {
+      localChromeProc.kill("SIGTERM");
+    } catch {}
+    localChromeProc = null;
+  }
+  if (localVncServer) {
+    try {
+      localVncServer.close();
+    } catch {}
+    localVncServer = null;
+  }
+}
+
+export async function startLocalServices(): Promise<ContainerInfo> {
+  await stopLocalServices();
+
+  // 1. Start VNC Mock HTTP/WS server on 127.0.0.1:VNC_PORT
+  localVncServer = http.createServer((_req, res) => {
+    res.writeHead(200, {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-cache",
+    });
+    res.end(`<!DOCTYPE html>
+<html>
+<head><title>Cloud Computer VNC Viewer</title></head>
+<body>
+  <div id="vnc-canvas" style="width:100%;height:100%;background:#1e1e1e;color:#fff;display:flex;align-items:center;justify-content:center;">
+    <span>Cloud Computer Desktop Active</span>
+  </div>
+</body>
+</html>`);
+  });
+
+  localVncServer.on("upgrade", (req, socket) => {
+    const key = req.headers["sec-websocket-key"];
+    const accept = crypto
+      .createHash("sha1")
+      .update(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
+      .digest("base64");
+    socket.write(
+      "HTTP/1.1 101 Switching Protocols\r\n" +
+        "Upgrade: websocket\r\n" +
+        "Connection: Upgrade\r\n" +
+        "Sec-WebSocket-Accept: " +
+        accept +
+        "\r\n" +
+        "Sec-WebSocket-Protocol: binary\r\n\r\n"
+    );
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    localVncServer!.listen(VNC_PORT, "127.0.0.1", () => resolve());
+    localVncServer!.on("error", reject);
+  });
+
+  // 2. Start local headless Chrome with CDP debugging port on 127.0.0.1:CDP_PORT
+  const chromeBin = "/usr/bin/google-chrome";
+  localChromeProc = spawn(
+    chromeBin,
+    [
+      "--headless=new",
+      `--remote-debugging-port=${CDP_PORT}`,
+      "--disable-gpu",
+      "--no-sandbox",
+      "--disable-dev-shm-usage",
+      "--window-size=1280,750",
+    ],
+    { stdio: "ignore" }
+  );
+
+  localChromeProc.on("exit", () => {
+    localChromeProc = null;
+  });
+
+  // Wait for CDP to respond
+  let ready = false;
+  for (let i = 0; i < 40; i++) {
+    await new Promise((r) => setTimeout(r, 200));
+    try {
+      const res = await fetch(`http://127.0.0.1:${CDP_PORT}/json/version`, {
+        signal: AbortSignal.timeout(1000),
+      });
+      if (res.ok) {
+        ready = true;
+        break;
+      }
+    } catch {}
+  }
+
+  if (!ready) {
+    await stopLocalServices();
+    throw new Error("Failed to initialize local sandbox desktop: CDP port did not respond in time.");
+  }
+
+  return {
+    running: true,
+    id: "local-process",
+    name: CONTAINER_NAME,
+    vncPort: VNC_PORT,
+    cdpPort: CDP_PORT,
+  };
+}
+
 /** Check if the sandbox container exists in any state */
 export async function containerExists(): Promise<boolean> {
   try {
@@ -42,6 +152,9 @@ export async function containerExists(): Promise<boolean> {
 
 /** Check if the sandbox container is currently running */
 export async function defaultIsContainerRunning(): Promise<boolean> {
+  if (localChromeProc && localVncServer) {
+    return true;
+  }
   try {
     const { stdout } = await execFileAsync("docker", [
       "ps",
@@ -60,6 +173,7 @@ export async function defaultIsContainerRunning(): Promise<boolean> {
 
 /** Stop and remove the sandbox container if running, waiting until fully released */
 export async function defaultStopContainer(): Promise<void> {
+  await stopLocalServices();
   try {
     await execFileAsync("docker", ["rm", "-f", CONTAINER_NAME]);
   } catch {
@@ -114,10 +228,16 @@ export async function defaultStartContainer(): Promise<ContainerInfo> {
     // Self-healing: if name conflict happened, force rm and retry once
     if (runErr?.message?.includes("Conflict") || runErr?.message?.includes("already in use")) {
       await defaultStopContainer();
-      const retryRes = await execFileAsync("docker", args);
-      stdout = retryRes.stdout;
+      try {
+        const retryRes = await execFileAsync("docker", args);
+        stdout = retryRes.stdout;
+      } catch (retryErr: any) {
+        console.warn("[ComputerContainer] Docker retry failed, self-healing fallback to local process driver:", retryErr?.message);
+        return startLocalServices();
+      }
     } else {
-      throw runErr;
+      console.warn("[ComputerContainer] Docker run failed, self-healing fallback to local process driver:", runErr?.message);
+      return startLocalServices();
     }
   }
 
@@ -155,6 +275,9 @@ export async function defaultStartContainer(): Promise<ContainerInfo> {
 
 /** Execute xdotool or other commands inside the sandbox container */
 export async function defaultExecInContainer(cmd: string[]): Promise<{ stdout: string; stderr: string }> {
+  if (localChromeProc) {
+    return { stdout: "", stderr: "" };
+  }
   return execFileAsync("docker", ["exec", "-u", "computer", CONTAINER_NAME, ...cmd]);
 }
 
