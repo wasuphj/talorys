@@ -13,6 +13,14 @@ export interface Env {
   TALORYS_ENV?: string;
   /** Development only: use the deterministic mock AI provider. */
   TALORYS_MOCK_AI?: string;
+  /** Cloud Computer Manager connection */
+  COMPUTER_MANAGER_URL?: string;
+  COMPUTER_MANAGER_SECRET?: string;
+  /** Real LLM provider selection (e.g. "openai-compatible" or "workers-ai") */
+  TALORYS_AI_PROVIDER?: string;
+  OPENAI_BASE_URL?: string;
+  OPENAI_MODEL?: string;
+  OPENAI_API_KEY?: string;
   /** Development only: extra allowed origins (comma separated), e.g. the Vite dev server. */
   TALORYS_DEV_ORIGINS?: string;
   /** Installer defaults: the owner's timezone and chosen agent name. */

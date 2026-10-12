@@ -59,9 +59,13 @@ function hasTable(db: Database): boolean {
 /** A new unit-length copy of `v`; a zero vector stays zero. */
 export function normalize(v: Float32Array): Float32Array {
   let sum = 0;
-  for (let i = 0; i < v.length; i++) sum += v[i]! * v[i]!;
+  for (let i = 0; i < v.length; i++) {
+    const val = v[i]!;
+    if (!Number.isFinite(val)) return new Float32Array(v.length);
+    sum += val * val;
+  }
   const out = new Float32Array(v.length);
-  if (sum === 0) return out;
+  if (sum === 0 || !Number.isFinite(sum)) return out;
   const norm = Math.sqrt(sum);
   for (let i = 0; i < v.length; i++) out[i] = v[i]! / norm;
   return out;
@@ -71,8 +75,13 @@ export function normalize(v: Float32Array): Float32Array {
 export function dot(a: Float32Array, b: Float32Array): number {
   if (a.length !== b.length) return 0;
   let sum = 0;
-  for (let i = 0; i < a.length; i++) sum += a[i]! * b[i]!;
-  return sum;
+  for (let i = 0; i < a.length; i++) {
+    const av = a[i]!;
+    const bv = b[i]!;
+    if (!Number.isFinite(av) || !Number.isFinite(bv)) return 0;
+    sum += av * bv;
+  }
+  return Number.isFinite(sum) ? sum : 0;
 }
 
 /**

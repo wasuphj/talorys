@@ -43,7 +43,7 @@ export interface ImmediateTool<S extends z.ZodType = z.ZodType, R = unknown> ext
 export interface DestructiveTool<S extends z.ZodType = z.ZodType> extends BaseTool<S> {
   permission: "destructive";
   prepare: (input: z.infer<S>, ctx: ToolContext) => PreparedAction | Promise<PreparedAction>;
-  commit: (targetId: string, ctx: ToolContext) => unknown;
+  commit: (targetId: string, ctx: ToolContext) => unknown | Promise<unknown>;
 }
 
 export type ToolDefinition<S extends z.ZodType = z.ZodType, R = unknown> = ImmediateTool<S, R> | DestructiveTool<S>;
@@ -172,7 +172,7 @@ export async function runApprovedAction(tools: ToolDefinition[], ctx: ToolContex
     throw new AppError("CONFLICT", status === "expired" ? "This request expired. Ask again to get a new one." : "This action was already handled.");
   }
   try {
-    await tool.commit(stored.target_id, ctx);
+    await Promise.resolve(tool.commit(stored.target_id, ctx));
   } catch (error) {
     pending.markFailed(actionId, error instanceof ToolError ? error.message : "The action failed.");
     if (!(error instanceof ToolError)) console.error("Approved action failed", error);

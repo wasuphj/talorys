@@ -104,7 +104,7 @@ export class MemoryHistoryService {
   }
 
   private async afterWrite(memory: Memory, signal?: AbortSignal): Promise<WriteResult> {
-    if (!this.settings.get().memoryHistory.conflictReview) return { memory, superseded: [], reviews: [] };
+    if (!this.settings.get().memoryHistory?.conflictReview) return { memory, superseded: [], reviews: [] };
     try {
       return await this.detectConflicts(memory, signal);
     } catch (error) {
@@ -146,7 +146,7 @@ export class MemoryHistoryService {
       }
       // Ambiguous: optionally let the model dismiss a false alarm. It can never supersede by itself.
       let reason = a.reason;
-      if (this.settings.get().memoryHistory.aiConflictCheck && aiChecks < 1) {
+      if (this.settings.get().memoryHistory?.aiConflictCheck && aiChecks < 1) {
         aiChecks++;
         const verdict = await this.aiVerdict(candidates.get(a.oldMemoryId)!.content, memory.content, signal);
         if (verdict && (verdict.relationship === "complements" || verdict.relationship === "unrelated") && verdict.confidence >= 0.8) continue;
